@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-sqlite:
+    needs: goreleaser
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            label: linux_amd64
+          - runner: ubuntu-24.04-arm
+            label: linux_arm64
+          # darwin_amd64 omitted: GitHub retired Intel macOS runners. Intel Mac
+          # users get the plugin binary from goreleaser (CGO-free cross-compile)
+          # and can build the extensions locally with make sqlite / make postgres.
+          - runner: macos-latest
+            label: darwin_arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build SQLite extension
+        run: make sqlite
+
+      - name: Package
+        run: tar -czf steampipe_sqlite_ninjaone.${{ matrix.label }}.tar.gz steampipe_sqlite_ninjaone.so
+
+      - name: Upload to release
+        run: gh release upload "$TAG" "steampipe_sqlite_ninjaone.${{ matrix.label }}.tar.gz" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+
+  build-postgres:
+    needs: goreleaser
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            label: linux_amd64
+          - runner: ubuntu-24.04-arm
+            label: linux_arm64
+          # darwin_amd64 omitted: GitHub retired Intel macOS runners. Intel Mac
+          # users get the plugin binary from goreleaser (CGO-free cross-compile)
+          # and can build the extensions locally with make sqlite / make postgres.
+          - runner: macos-latest
+            label: darwin_arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install PostgreSQL dev headers (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-server-dev-16 rsync
+
+      - name: Install PostgreSQL (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install postgresql@14 || true
+          echo "$(brew --prefix postgresql@14)/bin" >> "$GITHUB_PATH"
+
+      - name: Build Postgres FDW extension
+        # with_llvm=no skips pgxs LLVM bitcode generation (JIT inlining), which
+        # requires a specific clang version the runners don't ship.
+        run: make postgres with_llvm=no
+
+      - name: Package
+        run: tar -czf steampipe_postgres_ninjaone.${{ matrix.label }}.tar.gz -C build/postgres .
+
+      - name: Upload to release
+        run: gh release upload "$TAG" "steampipe_postgres_ninjaone.${{ matrix.label }}.tar.gz" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}

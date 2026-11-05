@@ -1,0 +1,4 @@
+build/
+*.so
+*.plugin
+steampipe-plugin-ninjaone
